@@ -1,93 +1,101 @@
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
+# ---------------------------------------------------------
+# 1. Mathematical Operations
+# ---------------------------------------------------------
+def eval_legendre(z: torch.Tensor, max_degree: int) -> torch.Tensor:
+    """Evaluates standard Legendre polynomials up to max_degree using Bonnet's recursion formula."""
+    L = [torch.ones_like(z)]
+    if max_degree >= 1:
+        L.append(z)
+    for k in range(1, max_degree):
+        # (k+1) L_{k+1}(z) = (2k+1) z L_k(z) - k L_{k-1}(z)
+        L_next = ((2 * k + 1) * z * L[k] - k * L[k - 1]) / (k + 1)
+        L.append(L_next)
+    return torch.stack(L, dim=-1)
 
-def save_legendre_brownian_path(
-    coeffs: torch.Tensor,
-    s: float,
-    t: float,
-    save_path: str = "legendre_brownian_path.png",
-    num_grid: int = 1000,
-    title: str | None = None,
-) -> str:
-    """
-    Input:
-        coeffs:
-            Output of sample_legendre_brownian_input.
-            Expected shape:
-                (n,) or (1, n)
+def project_path_to_coeffs(W: torch.Tensor, t: torch.Tensor, K: int) -> torch.Tensor:
+    """Projects an SDE path onto K Legendre coefficients (Itô integral approximation)."""
+    dW = W[1:] - W[:-1]
+    t_left = t[:-1]
+    s, t_end = t[0], t[-1]
 
-        s, t:
-            Interval endpoints.
+    z_left = 2.0 * (t_left - s) / (t_end - s) - 1.0
+    L_z = eval_legendre(z_left, K - 1)
+    coeffs = torch.einsum('nk,n->k', L_z, dW)
+    return coeffs
 
-        save_path:
-            Path to save the figure.
+def reconstruct_path_from_coeffs(coeffs: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """Reconstructs the deterministic continuous path analytically from the coefficients."""
+    K = coeffs.shape[0]
+    s, t_end = t[0], t[-1]
+    z = 2.0 * (t - s) / (t_end - s) - 1.0
 
-    Output:
-        save_path
-    """
-    if t <= s:
-        raise ValueError("Require t > s.")
+    L_z = eval_legendre(z, K)
+    W_recon = torch.zeros_like(t)
 
-    coeffs = coeffs.detach()
+    W_recon += coeffs[0] * (z + 1.0) / 2.0
+    for k in range(1, K):
+        W_recon += coeffs[k] * (L_z[:, k+1] - L_z[:, k-1]) / 2.0
 
-    if coeffs.ndim == 2:
-        if coeffs.shape[0] != 1:
-            raise ValueError("This function expects batch size 1.")
-        coeffs = coeffs[0]
+    return W_recon
 
-    if coeffs.ndim != 1:
-        raise ValueError("coeffs must have shape (n,) or (1, n).")
+# ---------------------------------------------------------
+# 2. Path Generation and Animation Setup
+# ---------------------------------------------------------
+if __name__ == '__main__':
+    torch.manual_seed(42)
+    N = 10000
+    s, t_end = 0.0, 10.0
+    t = torch.linspace(s, t_end, N)
+    dt = t[1] - t[0]
+    dW = torch.randn(N - 1) * torch.sqrt(dt)
+    W_true = torch.cat([torch.zeros(1), torch.cumsum(dW, dim=0)])
 
-    device = coeffs.device
-    dtype = coeffs.dtype
-    n = coeffs.shape[0]
+    K_frames = list(range(1, 20, 1)) + list(range(20, 100, 5)) + list(range(100, 301, 10))
 
-    times = torch.linspace(s, t, num_grid, device=device, dtype=dtype)
-    x = (times - s) / (t - s)
-    y = 2.0 * x - 1.0
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    # Compute ordinary Legendre polynomials P_0(y), ..., P_n(y)
-    P = torch.empty(n + 1, num_grid, device=device, dtype=dtype)
-    P[0] = 1.0
+    # Use subplots_adjust instead of tight_layout to prevent the title from getting cut off
+    fig.subplots_adjust(top=0.9, bottom=0.15, left=0.1, right=0.95)
 
-    if n >= 1:
-        P[1] = y
+    ax.plot(t.numpy(), W_true.numpy(), color='black', alpha=0.3, label="True Brownian Motion", linewidth=1.5)
+    approx_line, = ax.plot([], [], color='#d62728', linewidth=1.5, label=r"Legendre Approx $W^{(K)}_t$")
 
-    for k in range(1, n):
-        P[k + 1] = ((2 * k + 1) * y * P[k] - k * P[k - 1]) / (k + 1)
+    ax.set_xlim(s, t_end)
+    ax.set_xlabel("Time (t)")
+    ax.set_ylabel("W(t)")
+    ax.legend(loc='upper left')
+    ax.grid(True)
 
-    # Compute A_k(x) = integral_0^x Pe_k(r) dr
-    A = torch.empty(n, num_grid, device=device, dtype=dtype)
-    A[0] = x
+    # ---------------------------------------------------------
+    # 3. Animation Rendering Loop
+    # ---------------------------------------------------------
+    def update(frame_idx):
+        K = K_frames[frame_idx]
 
-    for k in range(1, n):
-        A[k] = (P[k + 1] - P[k - 1]) / (2.0 * (2 * k + 1))
+        c_k = project_path_to_coeffs(W_true, t, K)
+        W_approx = reconstruct_path_from_coeffs(c_k, t)
 
-    # Reconstruct W_N(u) - W_s
-    k = torch.arange(n, device=device, dtype=dtype)
-    weights = 2.0 * k + 1.0
+        approx_line.set_data(t.numpy(), W_approx.numpy())
+        ax.set_title(f"Legendre Polynomial Expansion (Degree K = {K})", fontsize=14)
 
-    W = torch.sum(weights[:, None] * coeffs[:, None] * A, dim=0)
+        # [FIX] Dynamically adapt the Y-axis to prevent the curve from getting cut off
+        current_min = min(W_true.min().item(), W_approx.min().item())
+        current_max = max(W_true.max().item(), W_approx.max().item())
 
-    times_np = times.cpu().numpy()
-    W_np = W.cpu().numpy()
+        # Add a 1.5 margin to the top and bottom dynamically
+        ax.set_ylim(current_min-0.3, current_max+0.3)
 
-    plt.figure(figsize=(8, 4))
-    plt.plot(times_np, W_np, linewidth=1.5)
-    plt.axhline(0.0, linestyle="--", linewidth=1)
-    plt.scatter([s, t], [W_np[0], W_np[-1]], zorder=3)
+        return approx_line,
 
-    plt.xlabel("time")
-    plt.ylabel("W_N(u) - W_s")
+    ani = animation.FuncAnimation(
+        fig, update, frames=len(K_frames), interval=1, blit=False
+    )
 
-    if title is None:
-        title = f"Shifted Legendre Brownian approximation, N={n}"
-    plt.title(title)
-
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=160)
-    plt.close()
-
-    return save_path
+    print("Generating and saving animation to GIF... (This may take a moment)")
+    ani.save('legendre_brownian_approximation.gif', writer='pillow', fps=12)
+    print("Successfully saved 'legendre_brownian_approximation.gif'.")

@@ -88,22 +88,3 @@ if __name__ == '__main__':
     # coeffs shape: [B, K, D]
     coeffs = sample_brownian_legendre_coeffs(s, t, degree=K, dim=D, batch_shape=(B,))
     print(f"Sampled coefficients shape: {coeffs.shape}")
-
-    # Visualize for B = D = 1 case.
-    D = 1
-    B = 1  # Batch Size.
-    s = torch.full((B,), 0)  # Start time.
-    t = torch.full((B,), 10)  # Terminal time.
-    coeffs_vis = sample_brownian_legendre_coeffs(s, t, degree=K, dim=D, batch_shape=(B,))
-
-    # Remove dimension coordinate.
-    print(f"Sampled coefficients shape: {coeffs_vis.shape}")
-    coeffs_vis = coeffs_vis.squeeze(-1)
-
-    # Visualize.
-    vis.save_legendre_brownian_path(
-        coeffs_vis,
-        s=0,
-        t=10,
-        save_path="brownian_legendre.png",
-    )
