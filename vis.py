@@ -55,7 +55,7 @@ if __name__ == '__main__':
     dW = torch.randn(N - 1) * torch.sqrt(dt)
     W_true = torch.cat([torch.zeros(1), torch.cumsum(dW, dim=0)])
 
-    K_frames = list(range(1, 20, 1)) + list(range(20, 100, 5)) + list(range(100, 301, 10))
+    K_frames = list(range(1, 20, 1)) + list(range(20, 100, 5)) + list(range(100, 501, 10))
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
